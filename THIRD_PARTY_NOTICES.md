@@ -14,6 +14,15 @@ Apache-2.0; both licenses are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
 fixes to its GLSL frontend that shader packs need, each applied in the commit that needed it. It is licensed under MIT or Apache-2.0; both licenses
 are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
 
+## libadrenotools and liblinkernsbypass
+
+`third_party/libadrenotools` is [libadrenotools](https://github.com/bylaws/libadrenotools) by Billy
+Laws at `8fae8ce`, with its `lib/linkernsbypass` submodule
+([liblinkernsbypass](https://github.com/bylaws/liblinkernsbypass)) at `aa39759`, both under the
+BSD-2-Clause license (`LICENSE.adrenotools` and `lib/linkernsbypass/LICENSE` in that folder).
+Only the Vulkan driver-loading hook is vendored (see `README.starling.md` there for what is built
+and what is left out): no changes to the vendored sources.
+
 ## libmimalloc-sys and mimalloc
 
 `third_party/libmimalloc-sys` is [libmimalloc-sys](https://github.com/purpleprotocol/mimalloc_rust)
