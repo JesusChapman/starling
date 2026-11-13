@@ -22,6 +22,9 @@ Only what Starling builds and reads on Android (`arm64-v8a`):
   hooks link against.
 - `src/bcenabler.cpp`, `src/bcenabler_patch.s`, `gen/bcenabler_patch.h`:
   kept for reference; not built (BCn patching is not enabled yet).
+- `src/hook/kgsl.h`: the Linux kernel's KGSL UAPI header
+  (GPL-2.0 WITH Linux-syscall-note): ioctl declarations only, used through
+  syscalls as the note permits; no kernel code is compiled in.
 
 ## What is left out
 

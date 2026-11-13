@@ -2515,7 +2515,7 @@ fn gpu_driver_rows() -> Vec<Row> {
     let drivers = crate::gpu_drivers::list();
     let selected = crate::gpu_drivers::selected();
     let active = crate::gpu_drivers::active().map(|(id, _)| id.to_owned());
-    let mut rows = Vec::new();
+    let mut rows = vec![Row::Note(tr("horizon.pages.gpu_drivers.warning").plain())];
     if let Some(notice) = crate::gpu_drivers::take_notice() {
         rows.push(Row::Note(notice));
     }
@@ -3767,8 +3767,8 @@ impl OptionsUi {
                     ),
                     None,
                 ));
-                // Custom GPU drivers (Android only): the pick loads at the next start.
-                if cfg!(target_os = "android") {
+                // Custom GPU drivers (ARM64 Android only): the pick loads at the next start.
+                if cfg!(target_os = "android") && cfg!(target_arch = "aarch64") {
                     rows.push(Row::Buttons(
                         button(
                             0.0,

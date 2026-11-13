@@ -99,13 +99,17 @@ pub fn dir() -> PathBuf {
 
 /// The installed drivers, by name.
 pub fn list() -> Vec<Driver> {
+    list_in(&dir())
+}
+
+fn list_in(dest: &Path) -> Vec<Driver> {
     let mut drivers = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir()) else {
+    let Ok(entries) = std::fs::read_dir(dest) else {
         return drivers;
     };
     for entry in entries.flatten() {
         let id = entry.file_name().to_string_lossy().into_owned();
-        let folder = dir().join(&id);
+        let folder = dest.join(&id);
         if !entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
@@ -127,20 +131,28 @@ pub fn list() -> Vec<Driver> {
 
 /// The chosen driver's folder name, if any and installed.
 pub fn selected() -> Option<String> {
-    let id = std::fs::read_to_string(dir().join(CURRENT))
+    selected_in(&dir())
+}
+
+fn selected_in(dest: &Path) -> Option<String> {
+    let id = std::fs::read_to_string(dest.join(CURRENT))
         .ok()?
         .trim()
         .to_owned();
-    if id.is_empty() || !dir().join(&id).is_dir() {
+    if id.is_empty() || !dest.join(&id).is_dir() {
         return None;
     }
-    list().into_iter().find(|d| d.id == id).map(|d| d.id)
+    list_in(dest).into_iter().find(|d| d.id == id).map(|d| d.id)
 }
 
 /// Choose the driver with this folder name for the next start; empty chooses the system driver.
 pub fn select(id: &str) {
-    let _ = std::fs::create_dir_all(dir());
-    let _ = std::fs::write(dir().join(CURRENT), id);
+    select_in(id, &dir());
+}
+
+fn select_in(id: &str, dest: &Path) {
+    let _ = std::fs::create_dir_all(dest);
+    let _ = std::fs::write(dest.join(CURRENT), id);
 }
 
 /// Delete the driver with this folder name; the system driver plays next if it was chosen.
@@ -170,7 +182,9 @@ pub fn is_elf_aarch64(head: &[u8]) -> bool {
         && u16::from_le_bytes([head[18], head[19]]) == 183 // EM_AARCH64
 }
 
-/// Whether the device runs this driver: its `minApi` or older.
+/// Whether the device runs this driver: its `minApi` or older. (`meta.json` carries no
+/// machine-readable GPU id, only display names, so generation matching is left to the
+/// package author and the player; a driver for another GPU fails back to the system one.)
 pub fn compatible(meta: &Metadata, device_api: i32) -> bool {
     device_api >= meta.min_api
 }
@@ -178,21 +192,25 @@ pub fn compatible(meta: &Metadata, device_api: i32) -> bool {
 /// The start may use the chosen driver: counts this start, and sets the driver aside with a
 /// notice once `TRIES` starts in a row ended before the first frame. True for the system driver.
 pub fn note_start() -> bool {
-    let Some(id) = selected() else {
+    note_start_in(&dir())
+}
+
+fn note_start_in(dest: &Path) -> bool {
+    let Some(id) = selected_in(dest) else {
         return true;
     };
-    let _ = std::fs::create_dir_all(dir());
-    let count = std::fs::read_to_string(dir().join(STARTS))
+    let _ = std::fs::create_dir_all(dest);
+    let count = std::fs::read_to_string(dest.join(STARTS))
         .ok()
         .and_then(|text| text.trim().parse::<u32>().ok())
         .unwrap_or(0);
     if count >= TRIES
-        && let Some(driver) = list().into_iter().find(|d| d.id == id)
+        && let Some(driver) = list_in(dest).into_iter().find(|d| d.id == id)
     {
-        let _ = std::fs::remove_file(dir().join(CURRENT));
-        let _ = std::fs::remove_file(dir().join(STARTS));
+        let _ = std::fs::remove_file(dest.join(CURRENT));
+        let _ = std::fs::remove_file(dest.join(STARTS));
         let _ = std::fs::write(
-            dir().join(NOTICE),
+            dest.join(NOTICE),
             format!(
                 "The {} driver closed {} times before it showed, so Starling started with the system driver.",
                 driver.label(),
@@ -201,18 +219,26 @@ pub fn note_start() -> bool {
         );
         return false;
     }
-    let _ = std::fs::write(dir().join(STARTS), (count + 1).to_string());
+    let _ = std::fs::write(dest.join(STARTS), (count + 1).to_string());
     true
 }
 
 /// The game showed its first frame: the chosen driver started.
 pub fn note_first_frame() {
-    let _ = std::fs::remove_file(dir().join(STARTS));
+    note_first_frame_in(&dir());
+}
+
+fn note_first_frame_in(dest: &Path) {
+    let _ = std::fs::remove_file(dest.join(STARTS));
 }
 
 /// Why the chosen driver was set aside, once.
 pub fn take_notice() -> Option<String> {
-    let path = dir().join(NOTICE);
+    take_notice_in(&dir())
+}
+
+fn take_notice_in(dest: &Path) -> Option<String> {
+    let path = dest.join(NOTICE);
     let notice = std::fs::read_to_string(&path)
         .ok()
         .filter(|n| !n.trim().is_empty())?;
@@ -225,8 +251,16 @@ pub fn take_notice() -> Option<String> {
 /// extracted flat (by file name, so hostile paths cannot escape), into a new folder of
 /// `gpu-drivers/` named after `title`.
 pub fn install_from_zip(path: &Path, title: &str) -> Result<Driver, String> {
+    // The hook libraries ship in the arm64-v8a APK only: anywhere else a driver could
+    // never load, so say so instead of installing files the game would ignore.
+    if !(cfg!(target_os = "android") && cfg!(target_arch = "aarch64")) {
+        return Err("custom GPU drivers need Starling on an ARM64 phone".to_owned());
+    }
     install_into(path, title, &dir())
 }
+
+/// The most a package may unpack: drivers are tens of megabytes; this stops archive bombs.
+const MAX_EXTRACT_BYTES: u64 = 256 << 20;
 
 fn install_into(path: &Path, title: &str, dest: &Path) -> Result<Driver, String> {
     let mut archive = zip::ZipArchive::new(
@@ -301,6 +335,8 @@ fn install_into(path: &Path, title: &str, dest: &Path) -> Result<Driver, String>
     let to = dest.join(&id);
     std::fs::create_dir_all(&to).map_err(|e| format!("could not add the driver: {e}"))?;
     let mut installed = 0;
+    let mut seen = std::collections::HashSet::new();
+    let mut remaining = MAX_EXTRACT_BYTES;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).map_err(|e| {
             let _ = std::fs::remove_dir_all(&to);
@@ -318,26 +354,53 @@ fn install_into(path: &Path, title: &str, dest: &Path) -> Result<Driver, String>
         if rel.as_os_str().is_empty() {
             continue;
         }
-        // Flat, by file name: the hook loads `folder/libraryName`.
+        // Flat, by file name: the hook loads `folder/libraryName`. A second file under
+        // the same name (another folder's library over the validated one) is rejected.
         let Some(base) = rel.file_name().map(|b| b.to_string_lossy().into_owned()) else {
             continue;
         };
         if base.is_empty() || base != base.trim() || base.contains(['/', '\\']) {
             continue;
         }
+        if !seen.insert(base.clone()) {
+            let _ = std::fs::remove_dir_all(&to);
+            return Err(format!("{} holds {base} twice", path.display()));
+        }
+        if entry.size() > remaining {
+            let _ = std::fs::remove_dir_all(&to);
+            return Err(format!("{} is too large to be a driver", path.display()));
+        }
         let mut out = File::create(to.join(&base)).map_err(|e| {
             let _ = std::fs::remove_dir_all(&to);
             format!("could not add the driver: {e}")
         })?;
-        io::copy(&mut entry, &mut out).map_err(|e| {
+        let written = io::copy(&mut entry, &mut out).map_err(|e| {
             let _ = std::fs::remove_dir_all(&to);
             format!("could not add the driver: {e}")
+        })?;
+        remaining = remaining.checked_sub(written).ok_or_else(|| {
+            let _ = std::fs::remove_dir_all(&to);
+            format!("{} is too large to be a driver", path.display())
         })?;
         installed += 1;
     }
     if installed == 0 || !to.join(&manifest.library_name).is_file() {
         let _ = std::fs::remove_dir_all(&to);
         return Err(format!("{} holds no driver files", path.display()));
+    }
+    // The library on disk, as the hook will load it: what was validated above may have
+    // been a different file under the same name.
+    let library = std::fs::read(to.join(&manifest.library_name)).map_err(|e| {
+        let _ = std::fs::remove_dir_all(&to);
+        format!("could not add the driver: {e}")
+    })?;
+    if library.len() < 20 || !is_elf_aarch64(&library[..20]) {
+        let _ = std::fs::remove_dir_all(&to);
+        return Err(format!(
+            "{}'s {} is not an ARM64 driver library",
+            path.display(),
+            manifest.library_name
+        ));
     }
     // The manifest the list reads.
     std::fs::create_dir_all(to.join(REDIRECT)).map_err(|e| {
@@ -488,5 +551,58 @@ mod tests {
         let missing = dir.join("empty.adpkg");
         driver_zip(&missing, "", b"short");
         assert!(install_into(&missing, "Short", &dest).is_err());
+    }
+
+    #[test]
+    fn repeated_crashes_set_the_driver_aside() {
+        let dir = scratch("starts");
+        let package = dir.join("turnip.adpkg");
+        driver_zip(&package, "", &elf_head(183, 2));
+        install_into(&package, "Turnip", &dir).unwrap();
+        select_in("Turnip", &dir);
+        assert_eq!(selected_in(&dir).as_deref(), Some("Turnip"));
+        assert!(note_start_in(&dir));
+        assert!(note_start_in(&dir));
+        assert!(!note_start_in(&dir));
+        assert_eq!(selected_in(&dir), None);
+        let notice = take_notice_in(&dir).expect("a notice");
+        assert!(notice.contains("Turnip"), "{notice}");
+        assert_eq!(take_notice_in(&dir), None);
+        // The system driver always starts.
+        assert!(note_start_in(&dir));
+    }
+
+    #[test]
+    fn a_first_frame_clears_the_crash_count() {
+        let dir = scratch("first-frame");
+        let package = dir.join("turnip.adpkg");
+        driver_zip(&package, "", &elf_head(183, 2));
+        install_into(&package, "Turnip", &dir).unwrap();
+        select_in("Turnip", &dir);
+        assert!(note_start_in(&dir));
+        note_first_frame_in(&dir);
+        assert!(note_start_in(&dir));
+        assert!(note_start_in(&dir));
+        assert_eq!(selected_in(&dir).as_deref(), Some("Turnip"));
+    }
+
+    #[test]
+    fn shadowed_libraries_are_rejected() {
+        let dir = scratch("reject");
+        // Same file name in another folder would overwrite the validated library: rejected.
+        let evil = dir.join("evil.adpkg");
+        let mut z = zip::ZipWriter::new(File::create(&evil).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        let manifest = r#"{"name":"Evil","libraryName":"vulkan.evil.so"}"#;
+        z.start_file(META, options).unwrap();
+        z.write_all(manifest.as_bytes()).unwrap();
+        z.start_file("vulkan.evil.so", options).unwrap();
+        z.write_all(&elf_head(183, 2)).unwrap();
+        z.start_file("nested/vulkan.evil.so", options).unwrap();
+        z.write_all(&[0u8; 64]).unwrap();
+        z.finish().unwrap();
+        let error = install_into(&evil, "Evil", &dir).expect_err("shadowed library");
+        assert!(error.contains("twice"), "{error}");
+        assert!(!dir.join("Evil").exists());
     }
 }

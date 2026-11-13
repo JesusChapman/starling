@@ -21,7 +21,10 @@ Laws at `8fae8ce`, with its `lib/linkernsbypass` submodule
 ([liblinkernsbypass](https://github.com/bylaws/liblinkernsbypass)) at `aa39759`, both under the
 BSD-2-Clause license (`LICENSE.adrenotools` and `lib/linkernsbypass/LICENSE` in that folder).
 Only the Vulkan driver-loading hook is vendored (see `README.starling.md` there for what is built
-and what is left out): no changes to the vendored sources.
+and what is left out): no changes to the vendored sources. `src/hook/kgsl.h` is a Linux kernel
+UAPI header (GPL-2.0 WITH Linux-syscall-note, The Linux Foundation and Qualcomm Innovation
+Center): it only declares the KGSL ioctl interface the hook talks through, which the syscall
+note permits without affecting the app's license; no kernel code is compiled in.
 
 ## libmimalloc-sys and mimalloc
 

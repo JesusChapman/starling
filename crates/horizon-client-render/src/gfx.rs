@@ -1735,15 +1735,21 @@ async fn open_device(
     // crashes (that is what the custom driver is for). Off Android nothing sets one.
     let custom_driver = crate::gpu_drivers::active().map(|(id, _)| id);
     if let Some(id) = custom_driver {
-        if api != GraphicsApi::Vulkan {
-            log::info!(
-                "Horizon renderer: custom GPU driver {id} chosen: Vulkan, not {}",
-                api.label()
-            );
+        if api == GraphicsApi::OpenGl {
+            // An explicit OpenGL ES choice wins over a chosen driver: the way back when a
+            // custom Vulkan driver misbehaves past startup.
+            log::info!("Horizon renderer: OpenGL ES chosen: the custom GPU driver {id} stays off");
         } else {
-            log::info!("Horizon renderer: custom GPU driver {id} chosen");
+            if api != GraphicsApi::Vulkan {
+                log::info!(
+                    "Horizon renderer: custom GPU driver {id} chosen: Vulkan, not {}",
+                    api.label()
+                );
+            } else {
+                log::info!("Horizon renderer: custom GPU driver {id} chosen");
+            }
+            api = GraphicsApi::Vulkan;
         }
-        api = GraphicsApi::Vulkan;
     }
     if custom_driver.is_none()
         && api == GraphicsApi::Auto
