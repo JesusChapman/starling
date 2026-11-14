@@ -181,41 +181,48 @@ fn cstring_dir(path: &Path) -> Option<std::ffi::CString> {
     std::ffi::CString::new(bytes).ok()
 }
 
+/// What the custom GPU driver loader says: no logger runs yet when it loads (logging
+/// starts in `entry::start`), so `main` replays these once it does, into the file and logcat.
+static GPU_DRIVER_NOTES: std::sync::OnceLock<Vec<(log::Level, String)>> =
+    std::sync::OnceLock::new();
+
 /// Load the chosen custom GPU driver, if any: adrenotools hooks libvulkan so the renderer
 /// opens the driver's Vulkan instead of the system's. (The hook libraries ship in the
 /// arm64-v8a APK only; elsewhere this finds nothing and the system driver plays.) The system
 /// driver also plays when nothing is chosen, when this phone cannot run the chosen one, and
-/// after the chosen one was set aside or failed to load.
-fn load_custom_driver() {
+/// after the chosen one was set aside or failed to load. What happened comes back for the log.
+fn load_custom_driver() -> Vec<(log::Level, String)> {
+    let mut notes = Vec::new();
+    let mut warn = |message: String| notes.push((log::Level::Warn, message));
     let Some(id) = crate::gpu_drivers::selected() else {
-        return;
+        return notes;
     };
     let Some(driver) = crate::gpu_drivers::list().into_iter().find(|d| d.id == id) else {
-        return;
+        return notes;
     };
     let Some(api) = device_api() else {
-        log::warn!("Horizon: cannot ask Android's API level; the system GPU driver plays");
-        return;
+        warn("Horizon: cannot ask Android's API level; the system GPU driver plays".into());
+        return notes;
     };
     if !crate::gpu_drivers::compatible(&driver.meta, api) {
-        log::warn!(
+        warn(format!(
             "Horizon: the {} driver needs Android {} (this phone: {api}); the system GPU driver plays",
             driver.label(),
             driver.meta.min_api,
-        );
-        return;
+        ));
+        return notes;
     }
     if !crate::gpu_drivers::note_start() {
         if let Some(notice) = crate::gpu_drivers::take_notice() {
-            log::warn!("Horizon: {notice}");
+            warn(format!("Horizon: {notice}"));
         }
-        return;
+        return notes;
     }
     // SAFETY: NUL-terminated names; RTLD_NOW (2), RTLD_LOCAL (0).
     let adrenotools = unsafe { dlopen(c"libadrenotools.so".as_ptr(), 2) };
     if adrenotools.is_null() {
-        log::warn!("Horizon: libadrenotools is missing; the system GPU driver plays");
-        return;
+        warn("Horizon: libadrenotools is missing; the system GPU driver plays".into());
+        return notes;
     }
     type OpenLibVulkan = unsafe extern "C" fn(
         std::ffi::c_int,
@@ -231,8 +238,8 @@ fn load_custom_driver() {
     let open = unsafe {
         let open = dlsym(adrenotools, c"adrenotools_open_libvulkan".as_ptr());
         if open.is_null() {
-            log::warn!("Horizon: libadrenotools has no driver hook; the system GPU driver plays");
-            return;
+            warn("Horizon: libadrenotools has no driver hook; the system GPU driver plays".into());
+            return notes;
         }
         std::mem::transmute::<*mut std::ffi::c_void, OpenLibVulkan>(open)
     };
@@ -241,16 +248,16 @@ fn load_custom_driver() {
         cstring_dir(&driver.dir()),
         std::ffi::CString::new(driver.meta.library_name.as_str()).ok(),
     ) else {
-        log::warn!("Horizon: the GPU driver's folders are unusable; the system GPU driver plays");
-        return;
+        warn("Horizon: the GPU driver's folders are unusable; the system GPU driver plays".into());
+        return notes;
     };
     let redirect_dir = driver.dir().join(crate::gpu_drivers::REDIRECT);
     let Some(redirect) = std::fs::create_dir_all(&redirect_dir)
         .ok()
         .and(cstring_dir(&redirect_dir))
     else {
-        log::warn!("Horizon: the GPU driver's folders are unusable; the system GPU driver plays");
-        return;
+        warn("Horizon: the GPU driver's folders are unusable; the system GPU driver plays".into());
+        return notes;
     };
     // SAFETY: NUL-terminated directories (each ends in `/`, as adrenotools requires) and
     // library name; null for the tmp dir (memfd on Android 9+) and the unused mapping
@@ -268,29 +275,33 @@ fn load_custom_driver() {
         )
     };
     if handle.is_null() {
-        log::warn!(
+        warn(format!(
             "Horizon: the {} driver did not load; the system GPU driver plays",
             driver.label(),
-        );
-        return;
+        ));
+        return notes;
     }
     // SAFETY: as above.
     let get = unsafe { dlsym(handle, c"vkGetInstanceProcAddr".as_ptr()) };
     if get.is_null() {
-        log::warn!(
+        warn(format!(
             "Horizon: the {} driver gave no Vulkan; the system GPU driver plays",
             driver.label(),
-        );
-        return;
+        ));
+        return notes;
     }
     let addr = get as usize;
     wgpu::hal::vulkan::set_custom_get_instance_proc_addr(addr);
     crate::gpu_drivers::set_active(&id, addr);
-    log::info!(
-        "Horizon: custom GPU driver {} from {}",
-        driver.label(),
-        driver.dir().display()
-    );
+    notes.push((
+        log::Level::Info,
+        format!(
+            "Horizon: custom GPU driver {} from {}",
+            driver.label(),
+            driver.dir().display()
+        ),
+    ));
+    notes
 }
 
 /// `data` sealed by StarlingActivity.sealSecret (the Android Keystore's key).
@@ -1426,8 +1437,14 @@ pub fn main(app: AndroidApp) {
     }
     crate::diagnostics::collect_exits(&private);
     // A chosen custom GPU driver replaces the system's libvulkan before anything loads Vulkan.
-    load_custom_driver();
+    // Its report waits for the log: none runs yet.
+    let _ = GPU_DRIVER_NOTES.set(load_custom_driver());
     crate::entry::start(Default::default(), || {
+        if let Some(driver_notes) = GPU_DRIVER_NOTES.get() {
+            for (level, message) in driver_notes {
+                log::log!(*level, "{message}");
+            }
+        }
         log::info!(
             "Horizon: Android, game folder {}, private files {}, arguments {args:?}, environment {env:?}",
             home.display(),
